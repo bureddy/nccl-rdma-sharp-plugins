@@ -166,7 +166,7 @@ ncclResult_t nccl_p2p_ib_get_properties(nccl_ib_dev_t *devs, int dev, ncclNetPro
   props->latency      = 0; // Not set
   props->port         = devs[dev].port + devs[dev].realPort;
   props->maxComms     = devs[dev].maxQp;
-  props->maxRecvs     = (p2p_plugin == NCCL_P2P_IB) ? NCCL_NET_IB_MAX_RECVS : 1;
+  props->maxRecvs     = (p2p_plugin == NCCL_P2P_IB) ? NCCL_NET_IB_MAX_OPS : 1;
 
   return ncclSuccess;
 }

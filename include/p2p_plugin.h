@@ -21,9 +21,9 @@
 #include "utils.h"
 
 #define MAXNAMESIZE 64
-#define NCCL_NET_IB_MAX_RECVS 8
+#define NCCL_NET_IB_MAX_OPS 1
 // We need to support NCCL_NET_MAX_REQUESTS for each concurrent receive
-#define MAX_REQUESTS (NCCL_NET_MAX_REQUESTS*NCCL_NET_IB_MAX_RECVS)
+#define MAX_REQUESTS (NCCL_NET_MAX_REQUESTS*NCCL_NET_IB_MAX_OPS)
 //static_assert(MAX_REQUESTS <= 256, "request id are encoded in wr_id and we need up to 8 requests ids per completion");
 #define IB_DEVICE_SYSFS_FMT "/sys/class/infiniband/%s/device/%s"
 
@@ -52,6 +52,9 @@ struct ncclIbRequest {
   int events;
   struct ncclSocket* sock;
   struct ncclIbGidInfo* gidInfo;
+  void *comm;
+  uint64_t idx;
+  int slot;
   int nreqs;
   union {
     struct {
@@ -59,9 +62,9 @@ struct ncclIbRequest {
       void* data;
       uint32_t lkey;
       int offset;
-    } send;
+    } local;
     struct {
-      int sizes[NCCL_NET_IB_MAX_RECVS];
+      int sizes[NCCL_NET_IB_MAX_OPS];
     } recv;
   };
 };
@@ -71,7 +74,7 @@ struct ncclIbVerbs {
   struct ibv_pd* pd; // duplicate of ncclIbDevs[dev].pd
   struct ibv_cq* cq;
   uint64_t pad[1];
-  struct ncclIbRequest reqs[MAX_REQUESTS];
+  struct ncclIbRequest reqs[MAX_REQUESTS*2];
 };
 
 typedef struct ncclIbDev {
