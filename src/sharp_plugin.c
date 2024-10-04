@@ -30,6 +30,8 @@ extern ncclCollNet_v8_t ncclCollNetPlugin_v8;
 int ncclNSharpDevs = -1;
 struct sharp_coll_caps sharp_caps;
 static int ncclSharpV3DatatypesSupported = 0;
+static int SharpResiliencyEnable = 0;
+NCCL_PARAM(SharpResiliencyEnable, "SHARP_RESILIENCY_ENABLE", 0);
 NCCL_PARAM(SharpGroupSizeThresh, "SHARP_GROUP_SIZE_THRESH", 2);
 NCCL_PARAM(SharpV3Datatypes, "SHARP_V3_DATATYPES", 2);
 NCCL_PARAM(SharpDisableRS, "SHARP_DISABLE_REDUCE_SCATTER", 0);
@@ -41,11 +43,23 @@ enum ncclSharpRequestType {
   NCCL_SHARP_REQ_IFLUSH,
 };
 
+struct ncclSharpOOBRequest {
+  int done;
+  void *srequest;
+  void *rrequest;
+  void *cComm;
+  uint64_t status;
+};
+
 struct ncclSharpRequest {
   int requestType;
   void *sharpRequest;
-  int  size;
-  int  used;
+  void *cComm;
+  int size;
+  int used;
+  int done;
+  struct ncclSharpOOBRequest checkIn;
+  struct ncclSharpOOBRequest checkOut;
 };
 
 struct ncclSharpListenComm {
@@ -59,6 +73,8 @@ struct ncclSharpCollComm {
   void*  recvComm;
   void*  sendComm;
   struct ncclSharpRequest*   reqs;
+  void* req_sMhandle;
+  void* req_rMhandle;
   struct sharp_coll_context* sharpCollContext;
   struct sharp_coll_comm*    sharpCollComm;
 };
@@ -160,6 +176,124 @@ int ncclSharpAllGather(void *context, void *buf, int len) {
   return 0;
 }
 
+int ncclSharp_oob_checkin(void *context, long value, struct ncclSharpOOBRequest *oob_req)
+{
+  oob_req->srequest = NULL;
+  oob_req->rrequest = NULL;
+  oob_req->status = value;
+  oob_req->cComm = (struct ncclSharpCollComm*)context;
+
+  return 0;
+}
+int ncclSharp_oob_checkout(void *context, long value, struct ncclSharpOOBRequest *oob_req)
+{
+  oob_req->srequest = NULL;
+  oob_req->rrequest = NULL;
+  oob_req->status = value;
+  oob_req->cComm = (struct ncclSharpCollComm*)context;
+
+  return 0;
+}
+
+int ncclSharp_oob_checkin_progress(struct ncclSharpOOBRequest *oob_req) {
+  struct ncclSharpCollComm* cComm = (struct ncclSharpCollComm*)oob_req->cComm;
+  assert(cComm->recvComm != NULL);
+  assert(cComm->sendComm != NULL);
+
+  int tag = 0x88;
+  void *buf = &oob_req->status;
+  int len = 8;
+
+  if(oob_req->rrequest) {
+    int done = 0;
+    NCCLCHECK(ncclNetPlugin_v8.test(oob_req->rrequest, &done, NULL));
+    if (done) {
+      oob_req->rrequest = NULL;
+      if (cComm->rank !=0) {
+          oob_req->status++;
+          while(oob_req->srequest == NULL) NCCLCHECK(ncclNetPlugin_v8.isend(cComm->sendComm, (void *)buf, len, tag, cComm->req_sMhandle, &oob_req->srequest));
+          //WARN("[%d]Checkin Send posted.", cComm->rank );
+          return 0;
+      } else {
+        return 1;
+      }
+    } else {
+      return 0;
+    }
+  }
+
+  if (oob_req->srequest) {
+    int done = 0;
+    NCCLCHECK(ncclNetPlugin_v8.test(oob_req->srequest, &done, NULL));
+    if (done) {
+      return 1;
+    } else {
+      return 0;
+    }
+  }
+
+  assert(oob_req->srequest == NULL && oob_req->rrequest == NULL);
+
+  if (cComm->rank == 1) {
+    while(oob_req->srequest == NULL) NCCLCHECK(ncclNetPlugin_v8.isend(cComm->sendComm, (void *)buf, len, tag, cComm->req_sMhandle, &oob_req->srequest));
+    //WARN("[%d]Checkin Send posted. val:%zu", cComm->rank, oob_req->status);
+  } else {
+    while(oob_req->rrequest == NULL) NCCLCHECK(ncclNetPlugin_v8.irecv(cComm->recvComm, 1, (void **)&buf, &len, &tag, &cComm->req_rMhandle, &oob_req->rrequest));
+    //WARN("[%d]Checkin Recv posted", cComm->rank);
+  }
+
+  return 0;
+}
+
+int ncclSharp_oob_checkout_progress(struct ncclSharpOOBRequest *oob_req) {
+  struct ncclSharpCollComm* cComm = (struct ncclSharpCollComm*)oob_req->cComm;
+  assert(cComm->recvComm != NULL);
+  assert(cComm->sendComm != NULL);
+
+  int tag = 0x88;
+  void *buf = &oob_req->status;
+  int len = 8;
+
+  if(oob_req->rrequest) {
+    int done = 0;
+    NCCLCHECK(ncclNetPlugin_v8.test(oob_req->rrequest, &done, NULL));
+    if (done) {
+      oob_req->rrequest = NULL;
+      if ((cComm->rank !=0) && (cComm->rank != (cComm->nranks-1))) {
+          while(oob_req->srequest == NULL) NCCLCHECK(ncclNetPlugin_v8.isend(cComm->sendComm, (void *)buf, len, tag, cComm->req_sMhandle, &oob_req->srequest));
+          //WARN("[%d]Checkout Send posted", cComm->rank);
+          return 0;
+      } else {
+        return 1;
+      }
+    } else {
+      return 0;
+    }
+  }
+
+  if (oob_req->srequest) {
+    int done = 0;
+    NCCLCHECK(ncclNetPlugin_v8.test(oob_req->srequest, &done, NULL));
+    if (done) {
+      return 1;
+    } else {
+      return 0;
+    }
+  }
+
+  assert(oob_req->srequest == NULL && oob_req->rrequest == NULL);
+
+  if (cComm->rank == 0) {
+    while(oob_req->srequest == NULL) NCCLCHECK(ncclNetPlugin_v8.isend(cComm->sendComm, (void *)buf, len, tag, cComm->req_sMhandle, &oob_req->srequest));
+    //WARN("[%d]Checkout Send posted, val:%zu", cComm->rank, oob_req->status);
+  } else {
+    while(oob_req->rrequest == NULL) NCCLCHECK(ncclNetPlugin_v8.irecv(cComm->recvComm, 1, (void **)&buf, &len, &tag, &cComm->req_rMhandle, &oob_req->rrequest));
+    //WARN("[%d]Checkout Rend posted", cComm->rank);
+  }
+
+  return 0;
+}
+
 int ncclSharpOobBarrier(void *ctx) {
   struct ncclSharpCollComm* cComm = (struct ncclSharpCollComm*)ctx;
   int* dummy;
@@ -253,6 +387,27 @@ ncclResult_t ncclSharpListen(int dev, void* opaqueHandle, void** listenComm) {
   return status;
 }
 
+ncclResult_t ncclSharpGetRequest(struct ncclSharpRequest* reqs, struct ncclSharpRequest** req) {
+  for (int i=0; i<MAX_REQUESTS; i++) {
+    struct ncclSharpRequest* r = reqs+i;
+    if (r->used == 0) {
+      r->used = 1;
+      r->sharpRequest = NULL;
+      r->size = 0;
+      r->done = 0;
+      r->checkIn.done = 0;
+      r->checkIn.srequest = r->checkIn.rrequest = NULL;
+      r->checkOut.srequest = r->checkOut.rrequest = NULL;
+      r->checkOut.done = 0;
+      *req = r;
+      return ncclSuccess;
+    }
+  }
+  WARN("SHARP : unable to allocate request");
+  *req = NULL;
+  return ncclInternalError;
+}
+
 ncclResult_t ncclSharpConnect(void* handles[], int nranks, int rank, void* listenComm, void** collComm) {
   struct ncclSharpListenComm* lComm = (struct ncclSharpListenComm*)listenComm;
   struct ncclSharpCollComm* cComm;
@@ -272,6 +427,8 @@ ncclResult_t ncclSharpConnect(void* handles[], int nranks, int rank, void* liste
     }
   }
 
+  SharpResiliencyEnable = ncclParamSharpResiliencyEnable();
+
   NCCLCHECK(ncclIbMalloc((void**)&cComm, sizeof(struct ncclSharpCollComm)));
   NCCLCHECK(ncclIbMalloc((void**)&cComm->reqs, sizeof(struct ncclSharpRequest)*MAX_REQUESTS));
 
@@ -289,6 +446,10 @@ ncclResult_t ncclSharpConnect(void* handles[], int nranks, int rank, void* liste
       NCCLCHECK(ncclNetPlugin_v6.accept(lComm->listenCommP2P, &cComm->recvComm)); // From prev
   } while(cComm->sendComm == NULL || cComm->recvComm == NULL);
 
+
+  NCCLCHECK(ncclNetPlugin_v8.regMr(cComm->recvComm, cComm->reqs, sizeof(struct ncclSharpRequest)*MAX_REQUESTS, NCCL_PTR_HOST, &cComm->req_rMhandle));
+  NCCLCHECK(ncclNetPlugin_v8.regMr(cComm->sendComm, cComm->reqs, sizeof(struct ncclSharpRequest)*MAX_REQUESTS, NCCL_PTR_HOST, &cComm->req_sMhandle));
+
   struct ncclSharpInfo* allInfo;
   pid_t pid = getpid();
   pthread_t tid = pthread_self();
@@ -296,6 +457,41 @@ ncclResult_t ncclSharpConnect(void* handles[], int nranks, int rank, void* liste
   allInfo[cComm->rank].hostId = gethostid();
   allInfo[cComm->rank].jobId = (((uint64_t)allInfo[cComm->rank].hostId << 32) | ((pid ^ tid) ^ rand()));
   NCCLCHECK(ncclSharpAllGather(cComm, allInfo, sizeof(struct ncclSharpInfo)));
+
+#if 0
+
+  struct ncclSharpRequest* req;
+  NCCLCHECK(ncclSharpGetRequest(cComm->reqs, &req));
+
+  if (cComm->rank == 1) {
+    ncclSharp_oob_checkin(cComm, 999, &req->checkIn);
+  } else {
+    ncclSharp_oob_checkin(cComm, 0, &req->checkIn);
+  }
+  int rc = 0;
+
+  do {
+      rc = ncclSharp_oob_checkin_progress(&req->checkIn);
+  } while(rc!=1);
+
+  WARN("rank:%d check-in value:%lu", cComm->rank, req->checkIn.status);
+
+   if (cComm->rank == 1) {
+    ncclSharp_oob_checkout(cComm, 0, &req->checkIn);
+  } else {
+    ncclSharp_oob_checkout(cComm, 222, &req->checkIn);
+  }
+
+   do {
+      rc = ncclSharp_oob_checkout_progress(&req->checkIn);
+  } while(rc!=1);
+
+
+  WARN("rank:%d check-out value:%lu", cComm->rank, req->checkIn.status);
+  sleep(2);
+  exit(-1);
+
+  #endif
 
   // Find my local rank;
   int localRank = 0;
@@ -443,21 +639,6 @@ ncclResult_t ncclSharpDeregMr(void* collComm, void* mhandle) {
   return ncclSuccess;
 }
 
-ncclResult_t ncclSharpGetRequest(struct ncclSharpRequest* reqs, struct ncclSharpRequest** req) {
-  for (int i=0; i<MAX_REQUESTS; i++) {
-    struct ncclSharpRequest* r = reqs+i;
-    if (r->used == 0) {
-      r->used = 1;
-      r->sharpRequest = NULL;
-      r->size = 0;
-      *req = r;
-      return ncclSuccess;
-    }
-  }
-  WARN("SHARP : unable to allocate request");
-  *req = NULL;
-  return ncclInternalError;
-}
 
 ncclResult_t ncclSharpIallreduce(void* collComm, void* sendData, void* recvData, int count,
       ncclDataType_t dataType, ncclRedOp_t redOp, void* sendMhandle, void* recvMhandle, void** request) {
@@ -509,6 +690,8 @@ ncclResult_t ncclSharpIallreduce(void* collComm, void* sendData, void* recvData,
     WARN("SHARP allreduce failed\n");
   }
   req->size =  count * dt_size;
+  req->done = 0;
+  req->cComm = (void *)cComm;
 #else
   if (SHARP_COLL_SUCCESS != sharp_coll_do_allreduce(cComm->sharpCollComm, &reduce_spec)) {
     WARN("SHARP allreduce failed\n");
@@ -567,6 +750,8 @@ ncclResult_t ncclSharpIallgather(void* collComm, void* sendData, int nRecvParts,
   req->size = recvSize;
 #endif
   req->requestType = NCCL_SHARP_REQ_SHARP_COLL;
+  req->done = 0;
+  req->cComm = (void *)cComm;
   *request = req;
   return ncclSuccess;
 }
@@ -636,6 +821,8 @@ ncclResult_t ncclSharpIreducescatter(void* collComm, int nSendParts, ncclNetSGE_
   req->size =  recvCount * dt_size;
 #endif
   req->requestType = NCCL_SHARP_REQ_SHARP_COLL;
+  req->done = 0;
+  req->cComm = (void *)cComm;
   *request = req;
   return ncclSuccess;
  }
@@ -653,7 +840,8 @@ ncclResult_t ncclSharpIflush(void* collComm, void* data, int size, void* mhandle
      req->used = 0;
      return ncclSuccess;
    }
-
+  req->done = 0;
+  req->cComm = (void *)cComm;
   *request = req;
    return ncclSuccess;
 }
@@ -670,13 +858,43 @@ ncclResult_t ncclSharpTest(void* request, int* done, int* size) {
   }
 
 #if BLOCKING==0
-  *done = sharp_coll_req_test(req->sharpRequest);
-  if (*done){
+  *done = 0;
+  if (1 || ((struct ncclSharpCollComm *)req->cComm)->rank==0) {
+    if (getenv("DEBUG")) {
+    int k=1; while(k);
+    }
+  }
+  if (!req->done) {
+    req->done = sharp_coll_req_test(req->sharpRequest);
+    if (req->done && !SharpResiliencyEnable){
+      *done = 1;
+    }
+  } else {
+    if (!req->checkIn.done) {
+      if (req->checkIn.srequest == NULL && req->checkIn.rrequest == NULL) {
+        ncclSharp_oob_checkin(req->cComm, 9999, &req->checkIn);
+        req->checkIn.done = ncclSharp_oob_checkin_progress(&req->checkIn);
+      } else {
+        req->checkIn.done = ncclSharp_oob_checkin_progress(&req->checkIn);
+      }
+    } else {
+      if (req->checkOut.srequest == NULL && req->checkOut.rrequest == NULL) {
+        ncclSharp_oob_checkout(req->cComm, req->checkIn.status, &req->checkOut);
+        req->checkOut.done = ncclSharp_oob_checkout_progress(&req->checkOut);
+      } else {
+        req->checkOut.done = ncclSharp_oob_checkout_progress(&req->checkOut);
+      }
+      if (req->checkOut.done) {
+        if (((struct ncclSharpCollComm *)req->cComm)->rank == ((struct ncclSharpCollComm *)req->cComm)->nranks -1)
+        INFO(NCCL_INIT, "checkout: rank:%d valule:%zu", ((struct ncclSharpCollComm *)req->cComm)->rank, req->checkOut.status);
+        *done = 1;
+      }
+    }
+  }
+  if (*done) {
     sharp_coll_req_free(req->sharpRequest);
     *size = req->size;
     req->used = 0;
-  } else {
-    *done = 0;
   }
 #else
   if (req->size != -1) {
@@ -692,6 +910,9 @@ ncclResult_t ncclSharpTest(void* request, int* done, int* size) {
 
 ncclResult_t ncclSharpCloseColl(void* collComm) {
   struct ncclSharpCollComm* cComm = (struct ncclSharpCollComm*)collComm;
+
+  NCCLCHECK(ncclNetPlugin_v8.deregMr(cComm->recvComm, cComm->req_rMhandle));
+  NCCLCHECK(ncclNetPlugin_v8.deregMr(cComm->sendComm, cComm->req_sMhandle));
 
   sharp_coll_comm_destroy(cComm->sharpCollComm);
   sharp_coll_finalize(cComm->sharpCollContext);
