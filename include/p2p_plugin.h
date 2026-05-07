@@ -105,7 +105,6 @@ typedef struct ncclIbDev {
   uint64_t guid;
   uint8_t portNum;
   uint8_t  link;
-  uint8_t  isSharpDev;
   int      speed;
   struct   ibv_context* context;
   int      pdRefs;
@@ -155,15 +154,13 @@ int nccl_p2p_ib_width(int width);
 /* Convert value returtned by ibv_query_port to actual link speed */
 int nccl_p2p_ib_speed(int speed);
 
-int64_t ncclParamSharpMaxComms();
-
 int64_t ncclParamIbMergeVfs();
 
 int64_t ncclParamIbMergeNics();
 
 int ncclIbRelaxedOrderingCapable(void);
 
-nccl_p2p_plugin_t nccl_p2p_get_plugin_type();
+
 
 ncclResult_t ncclIbStatsInit(struct ncclIbStats* stat);
 

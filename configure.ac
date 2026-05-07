@@ -119,12 +119,6 @@ AS_IF([test "x$with_mlx5_dv" != xno], [
 AS_IF([test "x$with_mlx5_dv" = "xyes" ], [LDFLAGS="$LDFLAGS -lmlx5"], [])
 
 
-# check for sharp
-AM_CONDITIONAL([HAVE_SHARP_PLUGIN], [false])
-m4_include([m4/sharp.m4])
-CHECK_SHARP
-AC_MSG_RESULT([SHARP support: $sharp_happy])
-
 #check for mlx5dv
 AM_CONDITIONAL([HAVE_MLX5_DV], [test "x$with_mlx5_dv" = xyes])
 

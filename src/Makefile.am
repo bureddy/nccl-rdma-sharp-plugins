@@ -20,12 +20,5 @@ libnccl_net_la_SOURCES = \
 	p2p_plugin.c \
 	ib_plugin.c
 
-if HAVE_SHARP_PLUGIN
-libnccl_net_la_CPPFLAGS += -DHAVE_SHARP_PLUGIN $(SHARP_CPPFLAGS)
-libnccl_net_la_LIBADD   += $(SHARP_LIBADD)
-libnccl_net_la_LDFLAGS  += $(SHARP_LDFLAGS) 
-libnccl_net_la_SOURCES  += sharp_plugin.c
-endif
-
 install-exec-hook:
 	cd $(libdir) && ln -sf libnccl-net.so libnccl-net-ibext.so

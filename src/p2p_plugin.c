@@ -33,14 +33,7 @@ const char* ibProviderName[] = {
   "Mlx5",
 };
 
-#ifdef HAVE_SHARP_PLUGIN
-extern int ncclNSharpDevs;
-#else
-/* In case sharp plugin is not there just define this variable locally to make code cleaner */
-int ncclNSharpDevs;
-#endif
 extern int ncclIbRelaxedOrderingEnabled;
-NCCL_PARAM(SharpMaxComms, "SHARP_MAX_COMMS", 1);
 NCCL_PARAM(IbAdaptiveRouting, "IB_ADAPTIVE_ROUTING", -2);
 NCCL_PARAM(IbDataDirect,"IB_DATA_DIRECT", 1);
 
@@ -347,17 +340,6 @@ static void* ncclIbAsyncThreadMain(void* args) {
   return NULL;
 }
 
-int devSharpCompare(const void *a, const void *b)
-{
-  const struct ncclIbDev *d1 = (const struct ncclIbDev *)a;
-  const struct ncclIbDev *d2 = (const struct ncclIbDev *)b;
-
-  if (d1->isSharpDev == d2->isSharpDev) { return 0; }
-  else if (d1->isSharpDev > d2->isSharpDev) { return -1; }
-  else { return 1; }
-}
-
-
 static bool ncclMlx5dvDmaBufCapable(struct ibv_context *context){
   ncclResult_t res;
   int dev_fail = 0;
@@ -450,7 +432,6 @@ ncclResult_t nccl_p2p_ib_init(int *nDevs, int *nmDevs, ncclIbDev *ncclIbDevs, ch
       int nIpIfs = 0;
       ncclNIbDevs = 0;
       ncclNMergedIbDevs = 0;
-      ncclNSharpDevs = 0;
       NCCLCHECK(ncclFindInterfaces(ncclIbIfName, ncclIbIfAddr, MAX_IF_NAME_SIZE, 1, &nIpIfs));
       if (nIpIfs != 1) {
         WARN("NET/IB : No IP interface found.");
@@ -562,13 +543,6 @@ ncclResult_t nccl_p2p_ib_init(int *nDevs, int *nmDevs, ncclIbDev *ncclIbDevs, ch
               ncclIbDevs[ncclNIbDevs].ar = (portAttr.link_layer == IBV_LINK_LAYER_INFINIBAND) ? 1 : 0;
               if (ncclParamIbAdaptiveRouting() != -2) ncclIbDevs[ncclNIbDevs].ar = ncclParamIbAdaptiveRouting();
 
-              ncclIbDevs[ncclNIbDevs].isSharpDev = 0;
-              if (portAttr.link_layer == IBV_LINK_LAYER_INFINIBAND) {
-                ncclIbDevs[ncclNIbDevs].isSharpDev = 1;
-                ncclIbDevs[ncclNIbDevs].maxQp = ncclParamSharpMaxComms();
-                ncclNSharpDevs++;
-              }
-
               TRACE(NCCL_NET,"NET/IB: [%d] %s:%s:%d/%s provider=%s speed=%d context=%p pciPath=%s ar=%d", d, devices[d]->name, devices[d]->dev_name, ncclIbDevs[ncclNIbDevs].portNum,
                 NCCL_IB_LLSTR(portAttr.link_layer), ibProviderName[ncclIbDevs[ncclNIbDevs].ibProvider], ncclIbDevs[ncclNIbDevs].speed, context, ncclIbDevs[ncclNIbDevs].pciPath, ncclIbDevs[ncclNIbDevs].ar);
               if (ncclIbAsyncThread != NULL) {
@@ -603,14 +577,8 @@ ncclResult_t nccl_p2p_ib_init(int *nDevs, int *nmDevs, ncclIbDev *ncclIbDevs, ch
     // Determine whether RELAXED_ORDERING is enabled and possible
     ncclIbRelaxedOrderingEnabled = ncclIbRelaxedOrderingCapable();
     for (int d = 0; d < ncclNIbDevs; d++) {
-#ifdef HAVE_SHARP_PLUGIN
-            snprintf(line+strlen(line), sizeof(line)-strlen(line), " [%d]%s:%d/%s%s", d, ncclIbDevs[d].devName,
-              ncclIbDevs[d].portNum, NCCL_IB_LLSTR(ncclIbDevs[d].link),
-              ncclIbDevs[d].isSharpDev ? "/SHARP" : "");
-#else
       snprintf(line+strlen(line), sizeof(line)-strlen(line), " [%d]%s:%d/%s", d, ncclIbDevs[d].devName,
         ncclIbDevs[d].portNum, NCCL_IB_LLSTR(ncclIbDevs[d].link));
-#endif
     }
     char addrline[SOCKET_NAME_MAXLEN+1];
     INFO(NCCL_INIT|NCCL_NET, "NET/IB : Using%s %s; OOB %s:%s", line, ncclIbRelaxedOrderingEnabled ? "[RO]" : "",
@@ -686,11 +654,6 @@ int nccl_p2p_ib_width(int width)
 int nccl_p2p_ib_speed(int speed)
 {
   return ibv_speeds[first_bit_set(speed, sizeof(ibv_speeds)/sizeof(int)-1)];
-}
-
-nccl_p2p_plugin_t nccl_p2p_get_plugin_type()
-{
-  return p2p_plugin;
 }
 
 struct ncclIbDev ncclIbDevs[MAX_IB_DEVS];
