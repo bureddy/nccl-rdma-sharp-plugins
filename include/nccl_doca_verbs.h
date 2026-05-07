@@ -27,9 +27,11 @@ ncclResult_t ncclDocaInitBase(struct ncclIbNetCommDevBase* base, struct ncclIbDe
                               void* cq_context, int nqps);
 ncclResult_t ncclDocaDestroyBase(struct ncclIbNetCommDevBase* base);
 
-/* Create a DOCA QP and transition it to INIT. Stores rvQp/qpn/qpType into the supplied ncclIbQp. */
+/* Create a DOCA QP and transition it to INIT. Stores rvQp/qpn/qpType into the supplied ncclIbQp.
+ * When force_rc is non-zero, the QP is created as plain RC even if NCCL_IB_MRC is enabled
+ * (used for the flush QP which is a self-loopback and cannot use MRC). */
 ncclResult_t ncclDocaCreateQp(struct ncclIbNetCommDevBase* base, struct ncclIbQp* qp,
-                              uint8_t ib_port, void* qp_context, int access_flags);
+                              uint8_t ib_port, void* qp_context, int access_flags, int force_rc);
 
 /* QP state transitions (use ibv_qp_attr to carry the parameters). */
 ncclResult_t ncclDocaRtrQp(struct ncclIbQp* qp, struct ncclIbDev* ibDev,

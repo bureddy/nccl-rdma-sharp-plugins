@@ -741,7 +741,12 @@ ncclResult_t ncclIbDestroyBase(struct ncclIbNetCommDevBase* base) {
 }
 
 ncclResult_t ncclIbCreateQp(uint8_t ib_port, struct ncclIbNetCommDevBase* base, int access_flags, void* qp_context, struct ncclIbQp* qp) {
-  return ncclDocaCreateQp(base, qp, ib_port, qp_context, access_flags);
+  return ncclDocaCreateQp(base, qp, ib_port, qp_context, access_flags, 0);
+}
+
+ncclResult_t ncclIbCreateFlushQp(uint8_t ib_port, struct ncclIbNetCommDevBase* base, int access_flags, void* qp_context, struct ncclIbQp* qp) {
+  /* Flush is a self-loopback RDMA_READ; MRC cannot do this, so force plain RC. */
+  return ncclDocaCreateQp(base, qp, ib_port, qp_context, access_flags, 1);
 }
 
 ncclResult_t ncclIbRtrQp(struct ncclIbQp* qp, int ibDevN, struct ncclIbGidInfo* sGidInfo, uint32_t dest_qp_num, struct ncclIbDevInfo* info, bool fifoTc, int tc, int sl) {
@@ -1292,7 +1297,7 @@ ib_recv:
       rCommDev->gpuFlush.sge.addr = (uint64_t)&rComm->gpuFlushHostMem;
       rCommDev->gpuFlush.sge.length = 1;
       rCommDev->gpuFlush.sge.lkey = rCommDev->gpuFlush.hostMr->lkey;
-      NCCLCHECKGOTO(ncclIbCreateQp(ibDev->portNum, &rCommDev->base, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ, &rComm->base.stats, &rCommDev->gpuFlush.qp), ret, fail);;
+      NCCLCHECKGOTO(ncclIbCreateFlushQp(ibDev->portNum, &rCommDev->base, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ, &rComm->base.stats, &rCommDev->gpuFlush.qp), ret, fail);;
       struct ncclIbDevInfo devInfo;
       devInfo.lid         = ibDev->portAttr.lid;
       devInfo.link_layer  = ibDev->portAttr.link_layer;

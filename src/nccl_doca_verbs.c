@@ -187,7 +187,7 @@ ncclResult_t ncclDocaDestroyBase(struct ncclIbNetCommDevBase* base) {
 }
 
 ncclResult_t ncclDocaCreateQp(struct ncclIbNetCommDevBase* base, struct ncclIbQp* qp,
-                              uint8_t ib_port, void* qp_context, int access_flags) {
+                              uint8_t ib_port, void* qp_context, int access_flags, int force_rc) {
   doca_error_t docaErr;
   struct doca_verbs_qp_init_attr* qpInit = NULL;
   struct doca_verbs_qp_attr* qpAttr = NULL;
@@ -197,7 +197,7 @@ ncclResult_t ncclDocaCreateQp(struct ncclIbNetCommDevBase* base, struct ncclIbQp
   int mask;
 
 #ifdef HAVE_DOCA_VERBS_MP
-  qpType = ncclParamIbMrc() ? DOCA_VERBS_QP_TYPE_RCX : DOCA_VERBS_QP_TYPE_RC;
+  qpType = (ncclParamIbMrc() && !force_rc) ? DOCA_VERBS_QP_TYPE_RCX : DOCA_VERBS_QP_TYPE_RC;
 #else
   qpType = DOCA_VERBS_QP_TYPE_RC;
 #endif
@@ -231,15 +231,12 @@ ncclResult_t ncclDocaCreateQp(struct ncclIbNetCommDevBase* base, struct ncclIbQp
   DOCACHECKGOTO(doca_verbs_qp_attr_set_port_num(qpAttr, ib_port), docaErr, err);
   DOCACHECKGOTO(doca_verbs_qp_attr_set_pkey_index(qpAttr, ncclParamIbPkey()), docaErr, err);
   DOCACHECKGOTO(doca_verbs_qp_attr_set_next_state(qpAttr, DOCA_VERBS_QP_STATE_INIT), docaErr, err);
-  mask = DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_PKEY_INDEX | DOCA_VERBS_QP_ATTR_PORT_NUM;
-  if (access_flags & IBV_ACCESS_REMOTE_WRITE) {
-    DOCACHECKGOTO(doca_verbs_qp_attr_set_allow_remote_write(qpAttr, 1), docaErr, err);
-    mask |= DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE;
-  }
-  if (access_flags & IBV_ACCESS_REMOTE_READ) {
-    DOCACHECKGOTO(doca_verbs_qp_attr_set_allow_remote_read(qpAttr, 1), docaErr, err);
-    mask |= DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_READ;
-  }
+  mask = DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_PKEY_INDEX | DOCA_VERBS_QP_ATTR_PORT_NUM
+       | DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE | DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_READ;
+  DOCACHECKGOTO(doca_verbs_qp_attr_set_allow_remote_write(qpAttr,
+                  (access_flags & IBV_ACCESS_REMOTE_WRITE) ? 1 : 0), docaErr, err);
+  DOCACHECKGOTO(doca_verbs_qp_attr_set_allow_remote_read(qpAttr,
+                  (access_flags & IBV_ACCESS_REMOTE_READ) ? 1 : 0), docaErr, err);
   if (qpType != DOCA_VERBS_QP_TYPE_UC) {
     DOCACHECKGOTO(doca_verbs_qp_attr_set_atomic_mode(qpAttr, DOCA_VERBS_QP_ATOMIC_MODE_IB_SPEC), docaErr, err);
     mask |= DOCA_VERBS_QP_ATTR_ATOMIC_MODE;
