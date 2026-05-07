@@ -122,6 +122,35 @@ AS_IF([test "x$with_mlx5_dv" = "xyes" ], [LDFLAGS="$LDFLAGS -lmlx5"], [])
 #check for mlx5dv
 AM_CONDITIONAL([HAVE_MLX5_DV], [test "x$with_mlx5_dv" = xyes])
 
+# DOCA verbs is REQUIRED — this build only supports DOCA QPs (no libibverbs QP fallback).
+AC_ARG_WITH([doca-verbs],
+            [AC_HELP_STRING([--with-doca-verbs(=DIR)], [Path to DOCA installation (REQUIRED)])],
+            [],
+            [with_doca_verbs=/opt/mellanox/doca])
+AC_SUBST([PKG_CONFIG_PATH],"$with_doca_verbs/lib/pkgconfig:$with_doca_verbs/lib/x86_64-linux-gnu/pkgconfig:$with_doca_verbs/lib/aarch64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH")
+export PKG_CONFIG_PATH
+PKG_CHECK_MODULES([DOCA_VERBS], [doca-verbs],
+                  [DOCA_VERBS_LDFLAGS="-Wl,-rpath -Wl,$with_doca_verbs/lib $DOCA_VERBS_LIBS"
+                   AC_SUBST([DOCA_VERBS_LDFLAGS])
+                   DOCA_VERBS_CPPFLAGS="-I$with_doca_verbs/include $DOCA_VERBS_CFLAGS -DDOCA_ALLOW_EXPERIMENTAL_API"
+                   save_CPPFLAGS="$CPPFLAGS"
+                   CPPFLAGS="$CPPFLAGS $DOCA_VERBS_CPPFLAGS"
+                   AC_CHECK_HEADER([doca_verbs_mp.h],
+                                   [AC_DEFINE([HAVE_DOCA_VERBS_MP], [1], [DOCA multipath verbs available])],
+                                   [AC_MSG_NOTICE([doca_verbs_mp.h not found; MRC support disabled])])
+                   CPPFLAGS="$save_CPPFLAGS"
+                   AC_SUBST([DOCA_VERBS_CPPFLAGS])],
+                  [AC_MSG_ERROR([doca-verbs pkg-config not found in $with_doca_verbs; this build requires DOCA verbs])])
+
+AC_ARG_ENABLE([mrc],
+              [AS_HELP_STRING([--enable-mrc], [Enable MRC (multipath RC) build (requires doca_verbs_mp.h)])],
+              [build_mrc=$enableval], [build_mrc=no])
+AS_IF([test "x$build_mrc" = "xyes"],
+      [AS_IF([test "x$ac_cv_header_doca_verbs_mp_h" != "xyes"],
+             [AC_MSG_ERROR([--enable-mrc requires doca_verbs_mp.h])])
+       AC_DEFINE([BUILD_MRC], [1], [Build MRC plugin variant])])
+AM_CONDITIONAL([BUILD_MRC], [test "x$build_mrc" = "xyes"])
+
 #check for required headers
 AC_CHECK_HEADERS([limits.h stdlib.h string.h unistd.h], [],
                  [AC_MSG_FAILURE([unable to find required headers])])

@@ -20,6 +20,14 @@
 #include "socket.h"
 #include "utils.h"
 
+/* Forward declarations to avoid pulling DOCA headers into every translation unit. */
+struct doca_verbs_context;
+struct doca_verbs_device_attr;
+struct doca_verbs_pd;
+struct doca_verbs_cq;
+struct doca_verbs_qp;
+struct doca_verbs_cc_group;
+
 #define MAXSUFFIXSIZE 16
 #define MAXNAMESIZE  (64 + MAXSUFFIXSIZE)
 #define NCCL_NET_IB_MAX_RECVS 8
@@ -90,9 +98,19 @@ typedef struct ncclIbNetCommDevBase {
   int ibDevN;
   struct ibv_pd* pd;
   struct ibv_cq* cq;
-  uint64_t pad[2];
+  struct doca_verbs_pd* rvPd;
+  struct doca_verbs_cq* rvCq;
   struct ncclIbGidInfo gidInfo;
 } ncclIbNetCommDevBase;
+
+typedef struct ncclIbQp {
+  struct ibv_qp* qp;
+  int devIndex;
+  int remDevIdx;
+  struct doca_verbs_qp* rvQp;
+  uint32_t qpn;
+  uint32_t qpType;
+} ncclIbQp;
 
 enum ncclIbProvider {
   IB_PROVIDER_NONE = 0,
@@ -126,6 +144,14 @@ typedef struct ncclIbDev {
       int dataDirect;
     } mlx5;
   } capsProvider;
+  struct doca_verbs_context* rvCtx;
+  struct doca_verbs_device_attr* verbs_device_attr;
+  struct doca_verbs_pd* rvPd;
+  struct doca_verbs_cc_group* cc_group;
+  /* MRC-specific: only meaningful when HAVE_DOCA_VERBS_MP is set; left as int / void* so
+   * this header doesn't pull doca_verbs_mp.h. */
+  int psn_win_size;
+  int mrc_rcx_type;
 } __attribute__((aligned(64))) ncclIbDev;
 
 
