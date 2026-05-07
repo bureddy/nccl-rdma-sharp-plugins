@@ -17,37 +17,6 @@
 #include "debug.h"
 #include "p2p_plugin.h"
 
-#ifdef HAVE_UCX_PLUGIN
-extern ncclNet_v11_t ucxPlugin_v11;
-extern ncclNet_v10_t ucxPlugin_v10;
-extern ncclNet_v9_t ucxPlugin_v9;
-extern ncclNet_v8_t ucxPlugin_v8;
-extern ncclNet_v7_t ucxPlugin_v7;
-extern ncclNet_v6_t ucxPlugin_v6;
-
-extern ncclNet_v11_t ucxRmaPlugin_v11;
-extern ncclNet_v10_t ucxRmaPlugin_v10;
-extern ncclNet_v9_t ucxRmaPlugin_v9;
-extern ncclNet_v8_t ucxRmaPlugin_v8;
-extern ncclNet_v7_t ucxRmaPlugin_v7;
-extern ncclNet_v6_t ucxRmaPlugin_v6;
-
-extern ncclNet_v11_t ucxUctPlugin_v11;
-extern ncclNet_v10_t ucxUctPlugin_v10;
-extern ncclNet_v9_t ucxUctPlugin_v9;
-extern ncclNet_v8_t ucxUctPlugin_v8;
-extern ncclNet_v7_t ucxUctPlugin_v7;
-extern ncclNet_v6_t ucxUctPlugin_v6;
-
-extern ncclNet_v11_t ucxUctRdPlugin_v11;
-extern ncclNet_v10_t ucxUctRdPlugin_v10;
-extern ncclNet_v9_t ucxUctRdPlugin_v9;
-extern ncclNet_v8_t ucxUctRdPlugin_v8;
-extern ncclNet_v7_t ucxUctRdPlugin_v7;
-extern ncclNet_v6_t ucxUctRdPlugin_v6;
-
-#endif
-
 extern ncclNet_v11_t ibPlugin_v11;
 extern ncclNet_v10_t ibPlugin_v10;
 extern ncclNet_v9_t ibPlugin_v9;
@@ -116,10 +85,6 @@ ncclNet_v6_t ncclNetPlugin_v6 = {
 
 static nccl_p2p_plugin_t p2p_plugin = NCCL_P2P_LAST;
 
-static int nccl_p2p_is_uct_plugin(nccl_p2p_plugin_t plugin) {
-  return (plugin == NCCL_P2P_UCX_UCT) || (plugin == NCCL_P2P_UCX_UCT_RD);
-}
-
 static void pluginSetup()
 {
   p2p_plugin = NCCL_P2P_IB;
@@ -131,63 +96,16 @@ static void pluginSetup()
   const char *p2p_layer = getenv("NCCL_PLUGIN_P2P");
   if (p2p_layer != NULL) {
     if (!strcasecmp(p2p_layer, "ib")) p2p_plugin = NCCL_P2P_IB;
-#ifdef HAVE_UCX_PLUGIN
-    else if (!strcasecmp(p2p_layer, "ucx")) p2p_plugin = NCCL_P2P_UCX;
-    else if (!strcasecmp(p2p_layer, "ucx_rma")) p2p_plugin = NCCL_P2P_UCX_RMA;
-    else if (!strcasecmp(p2p_layer, "ucx_uct")) p2p_plugin = NCCL_P2P_UCX_UCT;
-    else if (!strcasecmp(p2p_layer, "ucx_uct_read")) p2p_plugin = NCCL_P2P_UCX_UCT_RD;
-#endif
     else {
       WARN("Invalid value %s for NCCL_PLUGIN_P2P, using default", p2p_layer);
     }
   }
-  switch (p2p_plugin) {
-#ifdef HAVE_UCX_PLUGIN
-    case NCCL_P2P_UCX:
-      ncclNetPlugin_v11 = ucxPlugin_v11;
-      ncclNetPlugin_v10 = ucxPlugin_v10;
-      ncclNetPlugin_v9 = ucxPlugin_v9;
-      ncclNetPlugin_v8 = ucxPlugin_v8;
-      ncclNetPlugin_v7 = ucxPlugin_v7;
-      ncclNetPlugin_v6 = ucxPlugin_v6;
-   
-      break;
-    case NCCL_P2P_UCX_RMA:
-      ncclNetPlugin_v11 = ucxRmaPlugin_v11;
-      ncclNetPlugin_v10 = ucxRmaPlugin_v10;
-      ncclNetPlugin_v9 = ucxRmaPlugin_v9;
-      ncclNetPlugin_v8 = ucxRmaPlugin_v8;
-      ncclNetPlugin_v7 = ucxRmaPlugin_v7;
-      ncclNetPlugin_v6 = ucxRmaPlugin_v6;
-
-      break;
-    case NCCL_P2P_UCX_UCT:
-      ncclNetPlugin_v11 = ucxUctPlugin_v11;
-      ncclNetPlugin_v10 = ucxUctPlugin_v10;
-      ncclNetPlugin_v9 = ucxUctPlugin_v9;
-      ncclNetPlugin_v8 = ucxUctPlugin_v8;
-      ncclNetPlugin_v7 = ucxUctPlugin_v7;
-      ncclNetPlugin_v6 = ucxUctPlugin_v6;
-      break;
-    case NCCL_P2P_UCX_UCT_RD:
-      ncclNetPlugin_v11 = ucxUctRdPlugin_v11;
-      ncclNetPlugin_v10 = ucxUctRdPlugin_v10;
-      ncclNetPlugin_v9 = ucxUctRdPlugin_v9;
-      ncclNetPlugin_v8 = ucxUctRdPlugin_v8;
-      ncclNetPlugin_v7 = ucxUctRdPlugin_v7;
-      ncclNetPlugin_v6 = ucxUctRdPlugin_v6;
-      break;
-#endif
-    default:
-      ncclNetPlugin_v11 = ibPlugin_v11;
-      ncclNetPlugin_v10 = ibPlugin_v10;
-      ncclNetPlugin_v9 = ibPlugin_v9;
-      ncclNetPlugin_v8 = ibPlugin_v8;
-      ncclNetPlugin_v7 = ibPlugin_v7;
-      ncclNetPlugin_v6 = ibPlugin_v6;
-      break;
-  }
-
+  ncclNetPlugin_v11 = ibPlugin_v11;
+  ncclNetPlugin_v10 = ibPlugin_v10;
+  ncclNetPlugin_v9 = ibPlugin_v9;
+  ncclNetPlugin_v8 = ibPlugin_v8;
+  ncclNetPlugin_v7 = ibPlugin_v7;
+  ncclNetPlugin_v6 = ibPlugin_v6;
 }
 
 ncclResult_t pluginInit_v11(void** ctx, uint64_t commId, ncclNetCommConfig_v11_t* config, ncclDebugLogger_t logFunction, ncclProfilerCallback_t profFunction) {
@@ -316,8 +234,7 @@ ncclResult_t ncclIbGetPhysProperties(int dev, ncclNetProperties_t* props) {
   if (ibDev->capsProvider.mlx5.dataDirect) {
     props->forceFlush = 1;
   }
-  if ((nccl_p2p_is_uct_plugin(p2p_plugin) || (p2p_plugin == NCCL_P2P_IB)) &&
-      nccl_p2p_dmabuf_support(dev) == ncclSuccess) {
+  if (p2p_plugin == NCCL_P2P_IB && nccl_p2p_dmabuf_support(dev) == ncclSuccess) {
     props->ptrSupport |= NCCL_PTR_DMABUF; // GDR support via DMA-BUF
     INFO(NCCL_NET,"NET/IB : GPU Direct RDMA (DMABUF) enabled for HCA %d '%s", dev, ibDev->devName);
   }
@@ -326,12 +243,7 @@ ncclResult_t ncclIbGetPhysProperties(int dev, ncclNetProperties_t* props) {
   props->port = ibDev->portNum + ibDev->realPort;
   props->maxComms = ibDev->maxQp;
 
-  if (p2p_plugin == NCCL_P2P_IB || p2p_plugin == NCCL_P2P_UCX ||
-      nccl_p2p_is_uct_plugin(p2p_plugin)) {
-    props->maxRecvs = NCCL_NET_IB_MAX_RECVS;
-  } else {
-    props->maxRecvs = 1;
-  }
+  props->maxRecvs = NCCL_NET_IB_MAX_RECVS;
   props->netDeviceType = NCCL_NET_DEVICE_HOST;
   props->netDeviceVersion = NCCL_NET_DEVICE_INVALID_VERSION;
   props->maxP2pBytes = NCCL_MAX_NET_SIZE_BYTES;

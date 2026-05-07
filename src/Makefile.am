@@ -20,18 +20,6 @@ libnccl_net_la_SOURCES = \
 	p2p_plugin.c \
 	ib_plugin.c
 
-if HAVE_UCX_PLUGIN
-libnccl_net_la_CPPFLAGS += -DHAVE_UCX_PLUGIN $(UCX_CPPFLAGS)
-libnccl_net_la_LIBADD   += $(UCX_LIBADD)
-libnccl_net_la_LDFLAGS  += $(UCX_LDFLAGS) 
-libnccl_net_la_SOURCES  += \
-	ucx_plugin.c \
-	ucx_rma_plugin.c \
-	ucx_uct_lib.c \
-	ucx_uct_plugin.c \
-	ucx_uct_rd_plugin.c
-endif
-
 if HAVE_SHARP_PLUGIN
 libnccl_net_la_CPPFLAGS += -DHAVE_SHARP_PLUGIN $(SHARP_CPPFLAGS)
 libnccl_net_la_LIBADD   += $(SHARP_LIBADD)

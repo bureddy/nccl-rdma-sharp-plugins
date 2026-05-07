@@ -119,12 +119,6 @@ AS_IF([test "x$with_mlx5_dv" != xno], [
 AS_IF([test "x$with_mlx5_dv" = "xyes" ], [LDFLAGS="$LDFLAGS -lmlx5"], [])
 
 
-# check for ucx
-AM_CONDITIONAL([HAVE_UCX_PLUGIN], [false])
-m4_include([m4/ucx.m4])
-CHECK_UCX
-AC_MSG_RESULT([UCX support: $ucx_happy])
-
 # check for sharp
 AM_CONDITIONAL([HAVE_SHARP_PLUGIN], [false])
 m4_include([m4/sharp.m4])
