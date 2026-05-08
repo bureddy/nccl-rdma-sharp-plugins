@@ -151,6 +151,43 @@ AS_IF([test "x$build_mrc" = "xyes"],
        AC_DEFINE([BUILD_MRC], [1], [Build MRC plugin variant])])
 AM_CONDITIONAL([BUILD_MRC], [test "x$build_mrc" = "xyes"])
 
+# libnv_mrc (libMRC) — optional, enables NCCL_USE_LIBMRC=1 runtime data-path swap.
+AC_ARG_WITH([libmrc],
+            [AS_HELP_STRING([--with-libmrc(=DIR)], [Enable libnv_mrc data path (defaults to DOCA install dir)])],
+            [with_libmrc=$withval],
+            [with_libmrc=$with_doca_verbs])
+AS_IF([test "x$with_libmrc" != "xno"],
+      [save_CPPFLAGS="$CPPFLAGS"
+       save_LDFLAGS="$LDFLAGS"
+       save_LIBS="$LIBS"
+       LIBMRC_CPPFLAGS="-I$with_libmrc/include"
+       libmrc_libdir="$with_libmrc/lib"
+       for d in "$with_libmrc/lib/$($CC -print-multiarch 2>/dev/null)" \
+                "$with_libmrc/lib/x86_64-linux-gnu" \
+                "$with_libmrc/lib/aarch64-linux-gnu"; do
+         if test -n "$d" -a -f "$d/libnv_mrc.so"; then libmrc_libdir="$d"; break; fi
+       done
+       LIBMRC_LDFLAGS="-L$libmrc_libdir -Wl,-rpath -Wl,$libmrc_libdir"
+       CPPFLAGS="$CPPFLAGS $LIBMRC_CPPFLAGS"
+       LDFLAGS="$LDFLAGS $LIBMRC_LDFLAGS"
+       AC_CHECK_HEADER([mrc.h],
+                       [AC_CHECK_LIB([nv_mrc], [mrc_create_context],
+                                     [AC_DEFINE([HAVE_LIBMRC], [1], [libnv_mrc available for runtime data-path swap])
+                                      LIBMRC_LIBS="-lnv_mrc"
+                                      AC_SUBST([LIBMRC_CPPFLAGS])
+                                      AC_SUBST([LIBMRC_LDFLAGS])
+                                      AC_SUBST([LIBMRC_LIBS])
+                                      have_libmrc=yes],
+                                     [AC_MSG_NOTICE([libnv_mrc not found; NCCL_USE_LIBMRC will be unavailable])
+                                      have_libmrc=no])],
+                       [AC_MSG_NOTICE([mrc.h not found; NCCL_USE_LIBMRC will be unavailable])
+                        have_libmrc=no])
+       CPPFLAGS="$save_CPPFLAGS"
+       LDFLAGS="$save_LDFLAGS"
+       LIBS="$save_LIBS"],
+      [have_libmrc=no])
+AM_CONDITIONAL([HAVE_LIBMRC], [test "x$have_libmrc" = "xyes"])
+
 #check for required headers
 AC_CHECK_HEADERS([limits.h stdlib.h string.h unistd.h], [],
                  [AC_MSG_FAILURE([unable to find required headers])])

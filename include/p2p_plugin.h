@@ -27,6 +27,11 @@ struct doca_verbs_pd;
 struct doca_verbs_cq;
 struct doca_verbs_qp;
 struct doca_verbs_cc_group;
+#ifdef HAVE_LIBMRC
+struct mrc_context;
+struct mrc_cq;
+struct mrc_qp;
+#endif
 
 #define MAXSUFFIXSIZE 16
 #define MAXNAMESIZE  (64 + MAXSUFFIXSIZE)
@@ -101,6 +106,9 @@ typedef struct ncclIbNetCommDevBase {
   struct doca_verbs_pd* rvPd;
   struct doca_verbs_cq* rvCq;
   struct ncclIbGidInfo gidInfo;
+#ifdef HAVE_LIBMRC
+  struct mrc_cq* mrcCq;
+#endif
 } ncclIbNetCommDevBase;
 
 typedef struct ncclIbQp {
@@ -110,6 +118,9 @@ typedef struct ncclIbQp {
   struct doca_verbs_qp* rvQp;
   uint32_t qpn;
   uint32_t qpType;
+#ifdef HAVE_LIBMRC
+  struct mrc_qp* mrcQp;
+#endif
 } ncclIbQp;
 
 enum ncclIbProvider {
@@ -148,6 +159,9 @@ typedef struct ncclIbDev {
   struct doca_verbs_device_attr* verbs_device_attr;
   struct doca_verbs_pd* rvPd;
   struct doca_verbs_cc_group* cc_group;
+#ifdef HAVE_LIBMRC
+  struct mrc_context* mrcContext;
+#endif
   /* MRC-specific: only meaningful when HAVE_DOCA_VERBS_MP is set; left as int / void* so
    * this header doesn't pull doca_verbs_mp.h. */
   int psn_win_size;

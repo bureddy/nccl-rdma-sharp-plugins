@@ -91,6 +91,28 @@ ncclResult_t wrap_ibv_post_send(struct ibv_qp *qp, struct ibv_send_wr *wr, struc
 ncclResult_t wrap_ibv_post_recv(struct ibv_qp *qp, struct ibv_recv_wr *wr, struct ibv_recv_wr **bad_wr);
 ncclResult_t wrap_ibv_event_type_str(char **ret, enum ibv_event_type event);
 
+#ifdef HAVE_LIBMRC
+#include <mrc.h>
+ncclResult_t wrap_mrc_create_context(struct ibv_context* context, struct mrc_context** mrcContext);
+ncclResult_t wrap_mrc_destroy_context(struct mrc_context* mrcContext);
+ncclResult_t wrap_mrc_create_cq(struct mrc_cq **ret, struct mrc_context *mrcCtx, int cqe, void *cq_context, struct mrc_comp_channel *channel, int comp_vector);
+ncclResult_t wrap_mrc_destroy_cq(struct mrc_cq *cq);
+static inline ncclResult_t wrap_mrc_poll_cq(struct mrc_cq *cq, int num_entries, struct ibv_wc *wc, int* num_done) {
+  int done = mrc_poll_cq(cq, num_entries, wc);
+  if (done < 0) {
+    WARN("Call to mrc_poll_cq() returned %d", done);
+    return ncclSystemError;
+  }
+  *num_done = done;
+  return ncclSuccess;
+}
+ncclResult_t wrap_mrc_create_qp(struct mrc_qp **ret, struct mrc_context* mrcCtx, struct mrc_qp_init_attr *mrcQpInitAttr);
+ncclResult_t wrap_mrc_modify_qp(struct mrc_qp* mrcQp, struct ibv_qp_attr* attr, int attr_mask, struct mrc_qp_attr* mrcAttr, int mrcAttrMask);
+ncclResult_t wrap_mrc_destroy_qp(struct mrc_qp *mrcQp);
+ncclResult_t wrap_mrc_post_send(struct mrc_qp *mrcQp, struct ibv_send_wr *wr, struct ibv_send_wr **bad_wr);
+ncclResult_t wrap_mrc_post_recv(struct mrc_qp *mrcQp, struct ibv_recv_wr *wr, struct ibv_recv_wr **bad_wr);
+#endif /* HAVE_LIBMRC */
+
 // converts a GID into a readable string. On success, returns a non-null pointer to gidStr.
 // NULL is returned if there was an error, with errno set to indicate the error.
 // errno = ENOSPC if the converted string would exceed strLen.

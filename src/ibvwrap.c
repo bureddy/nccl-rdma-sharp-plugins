@@ -343,3 +343,75 @@ struct ibv_mr * wrap_direct_mlx5dv_reg_dmabuf_mr(struct ibv_pd *pd, uint64_t off
   return NULL;
 #endif
 }
+
+#ifdef HAVE_LIBMRC
+#include <mrc_api_ver.h>
+
+ncclResult_t wrap_mrc_create_context(struct ibv_context* context, struct mrc_context** mrcContext) {
+  if (context == NULL) { WARN("NET/IB: wrap_mrc_create_context called with NULL ibv_context"); return ncclInternalError; }
+  struct mrc_attr attr;
+  int mrcSupported = 0;
+  int mrcErrno = mrc_query_device(context, &attr, &mrcSupported);
+  if (mrcErrno != 0) { WARN("NET/IB: mrc_query_device returned %d", mrcErrno); return ncclSystemError; }
+  if (!mrcSupported) { WARN("NET/IB: MRC not supported on this device"); return ncclSystemError; }
+  struct mrc_context_attr mrcContextAttr;
+  memset(&mrcContextAttr, 0, sizeof(mrcContextAttr));
+#ifdef MRC_API_VER_USED
+  mrcContextAttr.mrc_api_version_used = MRC_API_VER_USED;
+#endif
+  *mrcContext = mrc_create_context(context, &mrcContextAttr);
+  if (*mrcContext == NULL) { WARN("NET/IB: MRC context creation failed"); return ncclSystemError; }
+  return ncclSuccess;
+}
+
+ncclResult_t wrap_mrc_destroy_context(struct mrc_context* mrcContext) {
+  if (mrcContext == NULL) return ncclSuccess;
+  int rc = mrc_destroy_context(mrcContext);
+  if (rc != 0) { WARN("NET/IB: mrc_destroy_context failed errno %d", rc); return ncclSystemError; }
+  return ncclSuccess;
+}
+
+ncclResult_t wrap_mrc_create_cq(struct mrc_cq **ret, struct mrc_context *mrcCtx, int cqe, void *cq_context, struct mrc_comp_channel *channel, int comp_vector) {
+  struct mrc_cq* mrcCq = mrc_create_cq(mrcCtx, cqe, cq_context, channel, comp_vector);
+  if (mrcCq == NULL) { WARN("mrc_create_cq failed"); return ncclSystemError; }
+  *ret = mrcCq;
+  return ncclSuccess;
+}
+
+ncclResult_t wrap_mrc_destroy_cq(struct mrc_cq *cq) {
+  int rc = mrc_destroy_cq(cq);
+  if (rc != 0) { WARN("mrc_destroy_cq failed errno %d", rc); return ncclSystemError; }
+  return ncclSuccess;
+}
+
+ncclResult_t wrap_mrc_create_qp(struct mrc_qp **ret, struct mrc_context* mrcCtx, struct mrc_qp_init_attr *mrcQpInitAttr) {
+  struct mrc_qp* mrcQp = mrc_create_qp(mrcCtx, mrcQpInitAttr);
+  if (mrcQp == NULL) { WARN("mrc_create_qp failed"); return ncclSystemError; }
+  *ret = mrcQp;
+  return ncclSuccess;
+}
+
+ncclResult_t wrap_mrc_modify_qp(struct mrc_qp* mrcQp, struct ibv_qp_attr* attr, int attr_mask, struct mrc_qp_attr* mrcAttr, int mrcAttrMask) {
+  int rc = mrc_modify_qp(mrcQp, attr, attr_mask, mrcAttr, mrcAttrMask);
+  if (rc) { WARN("mrc_modify_qp failed %d %s", rc, strerror(rc)); return ncclSystemError; }
+  return ncclSuccess;
+}
+
+ncclResult_t wrap_mrc_destroy_qp(struct mrc_qp *mrcQp) {
+  int rc = mrc_destroy_qp(mrcQp);
+  if (rc != 0) { WARN("mrc_destroy_qp failed errno %d", rc); return ncclSystemError; }
+  return ncclSuccess;
+}
+
+ncclResult_t wrap_mrc_post_send(struct mrc_qp *mrcQp, struct ibv_send_wr *wr, struct ibv_send_wr **bad_wr) {
+  int rc = mrc_post_send(mrcQp, wr, bad_wr);
+  if (rc) { WARN("mrc_post_send failed %s errno %d", strerror(rc), rc); return ncclSystemError; }
+  return ncclSuccess;
+}
+
+ncclResult_t wrap_mrc_post_recv(struct mrc_qp *mrcQp, struct ibv_recv_wr *wr, struct ibv_recv_wr **bad_wr) {
+  int rc = mrc_post_recv(mrcQp, wr, bad_wr);
+  if (rc) { WARN("mrc_post_recv failed %s errno %d", strerror(rc), rc); return ncclSystemError; }
+  return ncclSuccess;
+}
+#endif /* HAVE_LIBMRC */

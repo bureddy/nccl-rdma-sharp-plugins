@@ -7,10 +7,10 @@
 
 lib_LTLIBRARIES     = libnccl-net.la
 
-libnccl_net_la_CPPFLAGS = -I$(top_srcdir)/include $(DOCA_VERBS_CPPFLAGS)
+libnccl_net_la_CPPFLAGS = -I$(top_srcdir)/include $(DOCA_VERBS_CPPFLAGS) $(LIBMRC_CPPFLAGS)
 libnccl_net_la_CFLAGS   = $(CFLAGS) -DGNU_SOURCE
-libnccl_net_la_LIBADD   = -lcudart_static
-libnccl_net_la_LDFLAGS  = $(LDFLAGS) $(DOCA_VERBS_LDFLAGS)
+libnccl_net_la_LIBADD   = -lcudart_static $(LIBMRC_LIBS)
+libnccl_net_la_LDFLAGS  = $(LDFLAGS) $(DOCA_VERBS_LDFLAGS) $(LIBMRC_LDFLAGS)
 
 libnccl_net_la_SOURCES = \
 	ibvwrap.c \

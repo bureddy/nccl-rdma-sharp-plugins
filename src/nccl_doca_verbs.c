@@ -22,13 +22,14 @@
 #include "param.h"
 #include "p2p_plugin.h"
 #include "ibvwrap.h"
-#include "mrc.h"
+#include "nccl_mrc.h"
 #include "nccl_doca_verbs.h"
 
 /* These are defined in src/ib_plugin.c via NCCL_PARAM(); they have external linkage. */
 int64_t ncclParamIbPkey(void);
 int64_t ncclParamIbUseInline(void);
 int64_t ncclParamIbQpsPerConn(void);
+int64_t ncclParamUseLibMrc(void);
 
 /* Inline data size (matches ncclIbSendFifo size used in libibverbs path). */
 #define NCCL_IB_DOCA_INLINE_BYTES 64
@@ -85,6 +86,26 @@ ncclResult_t ncclDocaInitDevice(struct ncclIbDev* ibDev) {
 #else
   if (ncclParamIbMrc()) {
     WARN("NET/IB: NCCL_IB_MRC=1 but plugin was built without doca_verbs_mp.h; ignoring");
+  }
+#endif
+
+#ifdef HAVE_LIBMRC
+  if (ncclParamUseLibMrc()) {
+    /* libMrc must share its ibv_ctx with the bridge so that base->pd (a bridge PD)
+     * is valid for mrc_create_qp(). The bridge opened a private ibv_ctx via
+     * doca_verbs_bridge_verbs_context_create(); fetch it via the bridge accessor. */
+    struct ibv_context* bridgeCtx = doca_verbs_bridge_get_ibv_ctx(ibDev->rvCtx);
+    if (bridgeCtx == NULL) {
+      WARN("NET/IB: doca_verbs_bridge_get_ibv_ctx returned NULL; cannot init libMrc");
+      return ncclSystemError;
+    }
+    ibDev->mrcContext = NULL;
+    NCCLCHECK(wrap_mrc_create_context(bridgeCtx, &ibDev->mrcContext));
+    INFO(NCCL_NET, "NET/IB: libMrc data path enabled on %s", ibDev->devName);
+  }
+#else
+  if (ncclParamUseLibMrc()) {
+    WARN("NET/IB: NCCL_USE_LIBMRC=1 but plugin was built without libnv_mrc; ignoring");
   }
 #endif
   return ncclSuccess;
@@ -150,6 +171,11 @@ ncclResult_t ncclDocaInitBase(struct ncclIbNetCommDevBase* base, struct ncclIbDe
     pthread_mutex_unlock(&ibDev->lock);
     return ret;
   }
+#ifdef HAVE_LIBMRC
+  if (ncclParamUseLibMrc() && ibDev->mrcContext != NULL) {
+    NCCLCHECK(wrap_mrc_create_cq(&base->mrcCq, ibDev->mrcContext, cqSize, cq_context, NULL, 0));
+  }
+#endif
   /* libibverbs CQ used by the flush QP (matches mrc-nccl-plugin's split).
    * Must be created on the bridge's ibv_ctx so it shares a context with base->pd
    * (the bridge opened a private ibv_ctx via context_create); otherwise
@@ -189,6 +215,13 @@ unlock:
 
 ncclResult_t ncclDocaDestroyBase(struct ncclIbNetCommDevBase* base) {
   doca_error_t docaErr;
+#ifdef HAVE_LIBMRC
+  if (base->mrcCq) {
+    if (wrap_mrc_destroy_cq(base->mrcCq) != ncclSuccess)
+      WARN("NET/IB: wrap_mrc_destroy_cq failed");
+    base->mrcCq = NULL;
+  }
+#endif
   if (base->cq) {
     ncclResult_t r = wrap_ibv_destroy_cq(base->cq);
     if (r != ncclSuccess)

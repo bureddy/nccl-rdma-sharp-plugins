@@ -16,7 +16,7 @@
 #include "debug.h"
 #include "utils.h"
 #include "param.h"
-#include "mrc.h"
+#include "nccl_mrc.h"
 
 struct ncclIbQpHintsLayout qp_hints = {0};
 struct ncclIbCcHints cc_hints = {0};

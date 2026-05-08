@@ -27,7 +27,7 @@
 #include <assert.h>
 #include "ibvwrap.h"
 #include "nccl_doca_verbs.h"
-#include "mrc.h"
+#include "nccl_mrc.h"
 
 static char ncclIbIfName[MAX_IF_NAME_SIZE+1];
 static union ncclSocketAddress ncclIbIfAddr;
@@ -56,6 +56,16 @@ NCCL_PARAM(IbPciRelaxedOrdering, "IB_PCI_RELAXED_ORDERING", 2);
 NCCL_PARAM(IbFifoTc, "IB_FIFO_TC", 0);
 NCCL_PARAM(IbAsyncEvents,"IB_RETURN_ASYNC_EVENTS",1);
 NCCL_PARAM(IbEceEnable,"IB_ECE_ENABLE",1);
+NCCL_PARAM(UseLibMrc, "USE_LIBMRC", 0);
+
+/* Returns 1 if libMRC data path is requested AND compiled in, else 0. */
+static inline int useLibMrcDataPath(void) {
+#ifdef HAVE_LIBMRC
+  return ncclParamUseLibMrc() ? 1 : 0;
+#else
+  return 0;
+#endif
+}
 
 // With ncclNet_v11_t the NCCL core initializes the network plugin per-communicator
 // rather than once for all communicators. However, the internal plugin implementation
@@ -740,7 +750,49 @@ ncclResult_t ncclIbDestroyBase(struct ncclIbNetCommDevBase* base) {
   return ncclDocaDestroyBase(base);
 }
 
+#ifdef HAVE_LIBMRC
+static ncclResult_t ncclMrcCreateQp(uint8_t ib_port, struct ncclIbNetCommDevBase* base, int access_flags, void* qp_context, struct ncclIbQp* qp) {
+  struct ncclIbDev* ibDev = ncclIbDevs + base->ibDevN;
+  if (ibDev->mrcContext == NULL) { WARN("NET/IB: mrcContext NULL on dev %s", ibDev->devName); return ncclSystemError; }
+
+  struct mrc_qp_init_attr mrcQpInitAttr;
+  memset(&mrcQpInitAttr, 0, sizeof(mrcQpInitAttr));
+  mrcQpInitAttr.qp_context = qp_context;
+  mrcQpInitAttr.send_cq = base->mrcCq;
+  mrcQpInitAttr.recv_cq = base->mrcCq;
+  mrcQpInitAttr.pd = base->pd;
+  mrcQpInitAttr.cap.max_send_wr = 2 * MAX_REQUESTS;
+  mrcQpInitAttr.cap.max_recv_wr = MAX_REQUESTS;
+  mrcQpInitAttr.cap.max_send_sge = 1;
+  mrcQpInitAttr.cap.max_recv_sge = 1;
+  mrcQpInitAttr.cap.max_inline_data = ncclParamIbUseInline() ? sizeof(struct ncclIbSendFifo) : 0;
+  NCCLCHECK(wrap_mrc_create_qp(&qp->mrcQp, ibDev->mrcContext, &mrcQpInitAttr));
+
+  uint32_t qpn = 0;
+  if (mrc_get_qpn(qp->mrcQp, &qpn) != 0) {
+    WARN("NET/IB: mrc_get_qpn failed");
+    (void)wrap_mrc_destroy_qp(qp->mrcQp);
+    qp->mrcQp = NULL;
+    return ncclSystemError;
+  }
+  qp->qpn = qpn;
+
+  struct ibv_qp_attr qpAttr;
+  memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
+  qpAttr.qp_state = IBV_QPS_INIT;
+  qpAttr.port_num = ib_port;
+  qpAttr.qp_access_flags = access_flags;
+  int qpAttrMask = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
+  struct mrc_qp_attr mrcAttr;
+  memset(&mrcAttr, 0, sizeof(struct mrc_qp_attr));
+  return wrap_mrc_modify_qp(qp->mrcQp, &qpAttr, qpAttrMask, &mrcAttr, 0);
+}
+#endif
+
 ncclResult_t ncclIbCreateQp(uint8_t ib_port, struct ncclIbNetCommDevBase* base, int access_flags, void* qp_context, struct ncclIbQp* qp) {
+#ifdef HAVE_LIBMRC
+  if (useLibMrcDataPath()) return ncclMrcCreateQp(ib_port, base, access_flags, qp_context, qp);
+#endif
   return ncclDocaCreateQp(base, qp, ib_port, qp_context, access_flags, 0);
 }
 
@@ -870,6 +922,14 @@ ncclResult_t ncclIbRtrQp(struct ncclIbQp* qp, int ibDevN, struct ncclIbGidInfo* 
   qpAttr.ah_attr.src_path_bits = 0;
   qpAttr.ah_attr.port_num = info->ib_port;
   TRACE(NCCL_NET, "NET/IB : ncclIbRtrQp qpn=%u mtu=%d dst=%u ll=%u port=%u sl: %d tc: %d", qp->qpn, info->mtu, dest_qp_num, info->link_layer, info->ib_port, qpAttr.ah_attr.sl, qpAttr.ah_attr.grh.traffic_class);
+#ifdef HAVE_LIBMRC
+  if (useLibMrcDataPath()) {
+    int qpAttrMask = IBV_QP_STATE | IBV_QP_AV | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN | IBV_QP_PATH_MTU;
+    struct mrc_qp_attr mrcAttr;
+    memset(&mrcAttr, 0, sizeof(mrcAttr));
+    return wrap_mrc_modify_qp(qp->mrcQp, &qpAttr, qpAttrMask, &mrcAttr, 0);
+  }
+#endif
   return ncclDocaRtrQp(qp, ncclIbDevs + ibDevN, &qpAttr, info->link_layer);
 }
 
@@ -882,6 +942,14 @@ ncclResult_t ncclIbRtsQp(struct ncclIbQp* qp) {
   qpAttr.rnr_retry = 7;
   qpAttr.sq_psn = 0;
   qpAttr.max_rd_atomic = 1;
+#ifdef HAVE_LIBMRC
+  if (useLibMrcDataPath()) {
+    int qpAttrMask = IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY;
+    struct mrc_qp_attr mrcAttr;
+    memset(&mrcAttr, 0, sizeof(mrcAttr));
+    return wrap_mrc_modify_qp(qp->mrcQp, &qpAttr, qpAttrMask, &mrcAttr, 0);
+  }
+#endif
   return ncclDocaRtsQp(qp, &qpAttr);
 }
 
@@ -1707,6 +1775,10 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot,  void* pHand
     }
 
     struct ibv_send_wr* bad_wr;
+#ifdef HAVE_LIBMRC
+    if (useLibMrcDataPath()) NCCLCHECK(wrap_mrc_post_send(qp->mrcQp, comm->wrs, &bad_wr));
+    else
+#endif
     NCCLCHECK(ncclDocaPostSend(qp->rvQp, comm->wrs, &bad_wr));
 
     for (int r=0; r<nreqs; r++) {
@@ -1882,6 +1954,10 @@ ncclResult_t ncclIbPostFifo(struct ncclIbRecvComm* comm, int n, void** data, siz
   }
 
   struct ibv_send_wr* bad_wr;
+#ifdef HAVE_LIBMRC
+  if (useLibMrcDataPath()) NCCLCHECK(wrap_mrc_post_send(ctsQp->mrcQp, &wr, &bad_wr));
+  else
+#endif
   NCCLCHECK(ncclDocaPostSend(ctsQp->rvQp, &wr, &bad_wr));
   comm->remFifo.fifoTail++;
 
@@ -1922,6 +1998,10 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, size_t* sizes, int*
   for (int i = 0; i < nqps; i++) {
     struct ncclIbQp* qp = comm->base.qps + comm->base.qpIndex;
     ncclIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
+#ifdef HAVE_LIBMRC
+    if (useLibMrcDataPath()) NCCLCHECK(wrap_mrc_post_recv(qp->mrcQp, &wr, &bad_wr));
+    else
+#endif
     NCCLCHECK(ncclDocaPostRecv(qp->rvQp, &wr, &bad_wr));
     comm->base.qpIndex = (comm->base.qpIndex+1)%comm->base.nqps;
   }
@@ -2007,10 +2087,17 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
       TIME_START(3);
       // If we expect any completions from this device's CQ
       if (r->events[i]) {
-        // FLUSH requests use the ibverbs CQ (base->cq); all others use the DOCA CQ.
+        // FLUSH requests use the ibverbs CQ (base->cq); all others use the data-path CQ
+        // (libMRC mrcCq if NCCL_USE_LIBMRC=1, otherwise DOCA rvCq).
         if (r->type == NCCL_NET_IB_REQ_FLUSH) {
           NCCLCHECK(wrap_ibv_poll_cq(r->devBases[i]->cq, 4, wcs, &wrDone));
-        } else {
+        }
+#ifdef HAVE_LIBMRC
+        else if (useLibMrcDataPath()) {
+          NCCLCHECK(wrap_mrc_poll_cq(r->devBases[i]->mrcCq, 4, wcs, &wrDone));
+        }
+#endif
+        else {
           NCCLCHECK(ncclDocaPollCq(r->devBases[i]->rvCq, 4, wcs, &wrDone));
         }
         totalWrDone += wrDone;
@@ -2092,8 +2179,15 @@ ncclResult_t ncclIbCloseSend(void* sendComm) {
   if (comm) {
     NCCLCHECK(ncclSocketClose(&comm->base.sock, false));
 
-    for (int q = 0; q < comm->base.nqps; q++)
+    for (int q = 0; q < comm->base.nqps; q++) {
+#ifdef HAVE_LIBMRC
+      if (comm->base.qps[q].mrcQp != NULL) {
+        NCCLCHECK(wrap_mrc_destroy_qp(comm->base.qps[q].mrcQp));
+        comm->base.qps[q].mrcQp = NULL;
+      }
+#endif
       if (comm->base.qps[q].rvQp != NULL) NCCLCHECK(ncclDocaDestroyQp(comm->base.qps[q].rvQp));
+    }
 
     for (int i = 0; i < comm->base.vProps.ndevs; i++) {
       struct ncclIbSendCommDev* commDev = comm->devs + i;
@@ -2112,8 +2206,15 @@ ncclResult_t ncclIbCloseRecv(void* recvComm) {
   if (comm) {
     NCCLCHECK(ncclSocketClose(&comm->base.sock, false));
 
-    for (int q = 0; q < comm->base.nqps; q++)
+    for (int q = 0; q < comm->base.nqps; q++) {
+#ifdef HAVE_LIBMRC
+      if (comm->base.qps[q].mrcQp != NULL) {
+        NCCLCHECK(wrap_mrc_destroy_qp(comm->base.qps[q].mrcQp));
+        comm->base.qps[q].mrcQp = NULL;
+      }
+#endif
       if (comm->base.qps[q].rvQp != NULL) NCCLCHECK(ncclDocaDestroyQp(comm->base.qps[q].rvQp));
+    }
 
     for (int i = 0; i < comm->base.vProps.ndevs; i++) {
       struct ncclIbRecvCommDev* commDev = comm->devs + i;
