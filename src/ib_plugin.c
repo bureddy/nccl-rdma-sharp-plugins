@@ -745,8 +745,85 @@ ncclResult_t ncclIbCreateQp(uint8_t ib_port, struct ncclIbNetCommDevBase* base, 
 }
 
 ncclResult_t ncclIbCreateFlushQp(uint8_t ib_port, struct ncclIbNetCommDevBase* base, int access_flags, void* qp_context, struct ncclIbQp* qp) {
-  /* Flush is a self-loopback RDMA_READ; MRC cannot do this, so force plain RC. */
-  return ncclDocaCreateQp(base, qp, ib_port, qp_context, access_flags, 1);
+  /* Flush uses plain libibverbs (matches mrc-nccl-plugin) — bypasses the DOCA bridge data path. */
+  struct ibv_qp_init_attr qpInitAttr;
+  memset(&qpInitAttr, 0, sizeof(struct ibv_qp_init_attr));
+  qpInitAttr.qp_context = qp_context;
+  qpInitAttr.send_cq = base->cq;
+  qpInitAttr.recv_cq = base->cq;
+  qpInitAttr.qp_type = IBV_QPT_RC;
+  qpInitAttr.cap.max_send_wr = 2*MAX_REQUESTS;
+  qpInitAttr.cap.max_recv_wr = MAX_REQUESTS;
+  qpInitAttr.cap.max_send_sge = 1;
+  qpInitAttr.cap.max_recv_sge = 1;
+  qpInitAttr.cap.max_inline_data = ncclParamIbUseInline() ? sizeof(struct ncclIbSendFifo) : 0;
+  NCCLCHECK(wrap_ibv_create_qp(&qp->qp, base->pd, &qpInitAttr));
+  qp->qpn = qp->qp->qp_num;
+  struct ibv_qp_attr qpAttr;
+  memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
+  qpAttr.qp_state = IBV_QPS_INIT;
+  qpAttr.port_num = ib_port;
+  qpAttr.qp_access_flags = access_flags;
+  NCCLCHECK(wrap_ibv_modify_qp(qp->qp, &qpAttr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS));
+  return ncclSuccess;
+}
+
+ncclResult_t ncclIbRtrFlushQp(struct ibv_qp* qp, struct ncclIbGidInfo* sGidInfo, uint32_t dest_qp_num, struct ncclIbDevInfo* info, bool fifoTc, int tc, int sl) {
+  struct ibv_qp_attr qpAttr;
+  int same_subnet;
+  memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
+  qpAttr.qp_state = IBV_QPS_RTR;
+  qpAttr.path_mtu = info->mtu;
+  qpAttr.dest_qp_num = dest_qp_num;
+  qpAttr.rq_psn = 0;
+  qpAttr.max_dest_rd_atomic = 1;
+  qpAttr.min_rnr_timer = 12;
+  if (info->link_layer == IBV_LINK_LAYER_ETHERNET) {
+    qpAttr.ah_attr.is_global = 1;
+    qpAttr.ah_attr.grh.dgid.global.subnet_prefix = info->gid.global.subnet_prefix;
+    qpAttr.ah_attr.grh.dgid.global.interface_id = info->gid.global.interface_id;
+    qpAttr.ah_attr.grh.flow_label = 0;
+    qpAttr.ah_attr.grh.sgid_index = sGidInfo->localGidIndex;
+    qpAttr.ah_attr.grh.hop_limit = 255;
+    qpAttr.ah_attr.grh.traffic_class = fifoTc && ncclParamIbFifoTc() != -1 ? ncclParamIbFifoTc() : tc;
+  } else {
+    same_subnet = (ncclIbExtractLocalSubnetPrefix(sGidInfo->localGid.global.subnet_prefix) ==
+                   ncclIbExtractLocalSubnetPrefix(info->gid.global.subnet_prefix));
+    qpAttr.ah_attr.is_global = 0;
+    qpAttr.ah_attr.dlid = info->lid;
+    if (!same_subnet || info->is_global) {
+      if (!same_subnet) {
+        uint16_t flid = ncclIbExtractFlid(&info->gid);
+        if (flid == 0) {
+          WARN("Warning: remote FLID configured as zero even when endpoints are on different subnets, using dlid as fallback");
+          qpAttr.ah_attr.dlid = info->lid;
+        } else {
+          qpAttr.ah_attr.dlid = ncclIbExtractFlid(&info->gid);
+        }
+      }
+      qpAttr.ah_attr.is_global = 1;
+      qpAttr.ah_attr.grh.dgid.global.subnet_prefix = info->gid.global.subnet_prefix;
+      qpAttr.ah_attr.grh.dgid.global.interface_id = info->gid.global.interface_id;
+      qpAttr.ah_attr.grh.sgid_index = sGidInfo->localGidIndex;
+      qpAttr.ah_attr.grh.hop_limit = 255;
+    }
+  }
+  qpAttr.ah_attr.sl = sl;
+  qpAttr.ah_attr.src_path_bits = 0;
+  qpAttr.ah_attr.port_num = info->ib_port;
+  return wrap_ibv_modify_qp(qp, &qpAttr, IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
+}
+
+ncclResult_t ncclIbRtsFlushQp(struct ibv_qp* qp) {
+  struct ibv_qp_attr qpAttr;
+  memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
+  qpAttr.qp_state = IBV_QPS_RTS;
+  qpAttr.timeout = ncclParamIbTimeout();
+  qpAttr.retry_cnt = ncclParamIbRetryCnt();
+  qpAttr.rnr_retry = 7;
+  qpAttr.sq_psn = 0;
+  qpAttr.max_rd_atomic = 1;
+  return wrap_ibv_modify_qp(qp, &qpAttr, IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
 }
 
 ncclResult_t ncclIbRtrQp(struct ncclIbQp* qp, int ibDevN, struct ncclIbGidInfo* sGidInfo, uint32_t dest_qp_num, struct ncclIbDevInfo* info, bool fifoTc, int tc, int sl) {
@@ -1310,8 +1387,8 @@ ib_recv:
 #endif
       );
       devInfo.mtu         = ibDev->portAttr.active_mtu;
-      NCCLCHECKGOTO(ncclIbRtrQp(&rCommDev->gpuFlush.qp, rCommDev->base.ibDevN, &rCommDev->base.gidInfo, rCommDev->gpuFlush.qp.qpn, &devInfo, false, remMeta.tc, remMeta.sl), ret, fail);
-      NCCLCHECKGOTO(ncclIbRtsQp(&rCommDev->gpuFlush.qp), ret, fail);
+      NCCLCHECKGOTO(ncclIbRtrFlushQp(rCommDev->gpuFlush.qp.qp, &rCommDev->base.gidInfo, rCommDev->gpuFlush.qp.qp->qp_num, &devInfo, false, remMeta.tc, remMeta.sl), ret, fail);
+      NCCLCHECKGOTO(ncclIbRtsFlushQp(rCommDev->gpuFlush.qp.qp), ret, fail);
     }
 
     // Fill Handle
@@ -1887,7 +1964,7 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
 
     TIME_START(4);
     struct ibv_send_wr* bad_wr;
-    NCCLCHECK(ncclDocaPostSend(comm->devs[i].gpuFlush.qp.rvQp, &wr, &bad_wr));
+    NCCLCHECK(wrap_ibv_post_send(comm->devs[i].gpuFlush.qp.qp, &wr, &bad_wr));
     TIME_STOP(4);
     ncclIbAddEvent(req, i, &comm->devs[i].base);
   }
@@ -1930,7 +2007,12 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
       TIME_START(3);
       // If we expect any completions from this device's CQ
       if (r->events[i]) {
-        NCCLCHECK(ncclDocaPollCq(r->devBases[i]->rvCq, 4, wcs, &wrDone));
+        // FLUSH requests use the ibverbs CQ (base->cq); all others use the DOCA CQ.
+        if (r->type == NCCL_NET_IB_REQ_FLUSH) {
+          NCCLCHECK(wrap_ibv_poll_cq(r->devBases[i]->cq, 4, wcs, &wrDone));
+        } else {
+          NCCLCHECK(ncclDocaPollCq(r->devBases[i]->rvCq, 4, wcs, &wrDone));
+        }
         totalWrDone += wrDone;
         if (wrDone == 0) { TIME_CANCEL(3); } else { TIME_STOP(3); }
         if (wrDone == 0) continue;
@@ -2036,7 +2118,7 @@ ncclResult_t ncclIbCloseRecv(void* recvComm) {
     for (int i = 0; i < comm->base.vProps.ndevs; i++) {
       struct ncclIbRecvCommDev* commDev = comm->devs + i;
       if (comm->flushEnabled) {
-        if (commDev->gpuFlush.qp.rvQp != NULL) NCCLCHECK(ncclDocaDestroyQp(commDev->gpuFlush.qp.rvQp));
+        if (commDev->gpuFlush.qp.qp != NULL) NCCLCHECK(wrap_ibv_destroy_qp(commDev->gpuFlush.qp.qp));
         if (commDev->gpuFlush.hostMr != NULL) NCCLCHECK(wrap_ibv_dereg_mr(commDev->gpuFlush.hostMr));
       }
       if (commDev->fifoMr != NULL) NCCLCHECK(wrap_ibv_dereg_mr(commDev->fifoMr));

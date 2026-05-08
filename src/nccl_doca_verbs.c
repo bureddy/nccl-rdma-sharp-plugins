@@ -21,6 +21,7 @@
 #include "debug.h"
 #include "param.h"
 #include "p2p_plugin.h"
+#include "ibvwrap.h"
 #include "mrc.h"
 #include "nccl_doca_verbs.h"
 
@@ -149,7 +150,37 @@ ncclResult_t ncclDocaInitBase(struct ncclIbNetCommDevBase* base, struct ncclIbDe
     pthread_mutex_unlock(&ibDev->lock);
     return ret;
   }
-  base->cq = NULL;
+  /* libibverbs CQ used by the flush QP (matches mrc-nccl-plugin's split).
+   * Must be created on the bridge's ibv_ctx so it shares a context with base->pd
+   * (the bridge opened a private ibv_ctx via context_create); otherwise
+   * ibv_create_qp() rejects pd/cq from different contexts with EINVAL. */
+  struct ibv_context* bridgeCtx = doca_verbs_bridge_get_ibv_ctx(ibDev->rvCtx);
+  if (bridgeCtx == NULL) {
+    WARN("NET/IB: doca_verbs_bridge_get_ibv_ctx returned NULL");
+    doca_verbs_cq_destroy(base->rvCq);
+    base->rvCq = NULL;
+    pthread_mutex_lock(&ibDev->lock);
+    if (0 == --ibDev->pdRefs) {
+      doca_verbs_pd_destroy(ibDev->rvPd);
+      ibDev->rvPd = NULL;
+      ibDev->pd = NULL;
+    }
+    pthread_mutex_unlock(&ibDev->lock);
+    return ncclSystemError;
+  }
+  ret = wrap_ibv_create_cq(&base->cq, bridgeCtx, cqSize, cq_context, NULL, 0);
+  if (ret != ncclSuccess) {
+    doca_verbs_cq_destroy(base->rvCq);
+    base->rvCq = NULL;
+    pthread_mutex_lock(&ibDev->lock);
+    if (0 == --ibDev->pdRefs) {
+      doca_verbs_pd_destroy(ibDev->rvPd);
+      ibDev->rvPd = NULL;
+      ibDev->pd = NULL;
+    }
+    pthread_mutex_unlock(&ibDev->lock);
+    return ret;
+  }
   return ncclSuccess;
 unlock:
   if (locked) pthread_mutex_unlock(&ibDev->lock);
@@ -158,6 +189,12 @@ unlock:
 
 ncclResult_t ncclDocaDestroyBase(struct ncclIbNetCommDevBase* base) {
   doca_error_t docaErr;
+  if (base->cq) {
+    ncclResult_t r = wrap_ibv_destroy_cq(base->cq);
+    if (r != ncclSuccess)
+      WARN("NET/IB: wrap_ibv_destroy_cq failed");
+    base->cq = NULL;
+  }
   if (base->rvCq) {
     docaErr = doca_verbs_cq_destroy(base->rvCq);
     if (docaErr != DOCA_SUCCESS)
